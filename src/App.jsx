@@ -272,7 +272,7 @@ function App() {
   const [profiles, setProfiles] = useState([])
   const [categories, setCategories] = useState([])
   const [entries, setEntries] = useState([])
-  const [presence, setPresence] = useState([])
+  const [livePresence, setLivePresence] = useState([])
   const [currentMonth, setCurrentMonth] = useState(startOfMonth(new Date()))
   const [selectedDate, setSelectedDate] = useState(toIsoDate(new Date()))
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -297,12 +297,6 @@ function App() {
     setEntries(hydrated)
   }, [currentMonth])
 
-  const fetchPresence = useCallback(async () => {
-    const { data } = await supabase.from('presence').select('*, profile:profiles(*)')
-    const hydrated = await Promise.all((data || []).map(async (item) => ({ ...item, profile: { ...item.profile, avatar_url: await signedMediaUrl(item.profile?.avatar_path) } })))
-    setPresence(hydrated)
-  }, [])
-
   useEffect(() => {
     if (!hasSupabaseConfig || !supabase) return
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -317,18 +311,48 @@ function App() {
       setLoading(true)
       const { data: categoryData } = await supabase.from('categories').select('*').order('sort_order')
       if (mounted) setCategories(categoryData?.length ? categoryData : CATEGORY_FALLBACKS.map((item, index) => ({ ...item, id: item.slug, sort_order: index })))
-      await Promise.all([fetchProfiles(), fetchEntries(), fetchPresence()])
+      await Promise.all([fetchProfiles(), fetchEntries()])
       if (mounted) setLoading(false)
     }
     load()
-    const channel = supabase.channel('nuestro-tiempo-live').on('postgres_changes', { event: '*', schema: 'public', table: 'entries' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'entry_photos' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'presence' }, fetchPresence).on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchProfiles).subscribe()
+    const channel = supabase.channel('nuestro-tiempo-live').on('postgres_changes', { event: '*', schema: 'public', table: 'entries' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'entry_photos' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchProfiles).subscribe()
     return () => { mounted = false; supabase.removeChannel(channel) }
-  }, [session?.user?.id, currentMonth, fetchEntries, fetchPresence, fetchProfiles])
+  }, [session?.user?.id, currentMonth, fetchEntries, fetchProfiles])
+
+  useEffect(() => {
+    if (!session?.user?.id) return undefined
+    let channel
+    const updateLivePresence = () => {
+      const state = channel.presenceState()
+      const uniqueUsers = new Map()
+      Object.values(state).flat().forEach((item) => {
+        if (item?.user_id) uniqueUsers.set(item.user_id, item)
+      })
+      setLivePresence(Array.from(uniqueUsers.values()))
+    }
+
+    channel = supabase.channel('nuestro-tiempo-presence', { config: { presence: { key: session.user.id } } })
+      .on('presence', { event: 'sync' }, updateLivePresence)
+      .on('presence', { event: 'join' }, updateLivePresence)
+      .on('presence', { event: 'leave' }, updateLivePresence)
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({ user_id: session.user.id, calendar_date: selectedDate, heartbeat: Date.now() })
+          updateLivePresence()
+        }
+      })
+
+    return () => {
+      setLivePresence([])
+      supabase.removeChannel(channel)
+    }
+  }, [session?.user?.id])
 
   useEffect(() => {
     if (!session?.user?.id || !selectedDate) return
-    supabase.from('presence').upsert({ user_id: session.user.id, calendar_date: selectedDate, updated_at: new Date().toISOString() }).then(() => fetchPresence())
-  }, [selectedDate, session?.user?.id, fetchPresence])
+    const channel = supabase.getChannels().find((item) => item.topic === 'realtime:nuestro-tiempo-presence')
+    if (channel) channel.track({ user_id: session.user.id, calendar_date: selectedDate, heartbeat: Date.now() })
+  }, [selectedDate, session?.user?.id])
 
   useEffect(() => {
     if (!toast) return undefined
@@ -349,6 +373,8 @@ function App() {
     if (!query) return entries
     return entries.filter((entry) => [entry.title, entry.note, entry.location, entry.category?.name].some((field) => field?.toLowerCase().includes(query)))
   }, [entries, search])
+  const presence = useMemo(() => livePresence.map((item) => ({ ...item, profile: profiles.find((person) => person.id === item.user_id) })).filter((item) => item.profile), [livePresence, profiles])
+  const onlineUserIds = useMemo(() => new Set(presence.map((item) => item.user_id)), [presence])
   const selectedDayEntries = entries.filter((entry) => entry.entry_date === selectedDate)
   const monthMemories = entries.length
   const todayCount = entries.filter((entry) => entry.entry_date === toIsoDate(new Date())).length
@@ -356,10 +382,10 @@ function App() {
 
   if (!session) return <LoginScreen onLogin={(user) => setSession({ user })} />
   return <div className="app-shell">
-    <header className="app-header"><Logo compact /><div className="header-center"><span className="top-kicker">Nuestra historia</span><span className="live-indicator"><i /> Sincronizado en vivo</span></div><div className="header-actions"><div className="user-pair"><button className="avatar-button" onClick={() => setProfileOpen(true)}><Avatar profile={profile} size="sm" online /></button>{partner && <Avatar profile={partner} size="sm" online />}</div><div className="header-divider" /><button className="icon-button" onClick={() => setProfileOpen(true)} title="Editar perfil"><Settings2 size={18} /></button><button className="icon-button" onClick={signOut} title="Cerrar sesión"><LogOut size={18} /></button></div></header>
+    <header className="app-header"><Logo compact /><div className="header-center"><span className="top-kicker">Nuestra historia</span><span className="live-indicator"><i /> Sincronizado en vivo</span></div><div className="header-actions"><div className="user-pair"><button className="avatar-button" onClick={() => setProfileOpen(true)}><Avatar profile={profile} size="sm" online={onlineUserIds.has(session.user.id)} /></button>{partner && <Avatar profile={partner} size="sm" online={onlineUserIds.has(partner.id)} />}</div><div className="header-divider" /><button className="icon-button" onClick={() => setProfileOpen(true)} title="Editar perfil"><Settings2 size={18} /></button><button className="icon-button" onClick={signOut} title="Cerrar sesión"><LogOut size={18} /></button></div></header>
     <main className="main-content"><section className="welcome-row"><div><span className="eyebrow"><Sparkles size={14} /> Calendario compartido</span><h1>Hola, {profile?.display_name || profile?.username} <span>♡</span></h1><p>Un lugar para volver a todos sus días bonitos.</p></div><div className="quick-stats"><div><strong>{monthMemories}</strong><span>recuerdos este mes</span></div><div><strong>{todayCount}</strong><span>en el día de hoy</span></div></div></section>
       <section className="toolbar-card"><div className="month-navigation"><button className="icon-button light" onClick={() => moveMonth(-1)}><ArrowLeft size={17} /></button><button className="month-title" onClick={goToday}>{monthFormatter.format(currentMonth).replace(/^./, (letter) => letter.toUpperCase())}</button><button className="icon-button light" onClick={() => moveMonth(1)}><ArrowRight size={17} /></button><button className="today-button" onClick={goToday}>Hoy</button></div><div className="toolbar-tools"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar recuerdos..." /></div><button className="primary-button" onClick={() => { setSelectedDate(selectedDate || toIsoDate(new Date())); setDrawerOpen(true); setAddOpen(true) }}><Plus size={16} /> Nuevo recuerdo</button></div></section>
-      <section className="legend-row"><div className="legend-title"><CalendarDays size={16} /> Categorías</div><div className="legend-items">{categories.map((category) => <span key={category.id}><i style={{ background: category.color }} />{category.name}</span>)}</div><div className="calendar-hint"><span><Avatar profile={profile} size="xs" /> Tú</span>{partner && <span><Avatar profile={partner} size="xs" /> {partner.display_name || partner.username}</span>}</div></section>
+      <section className="legend-row"><div className="legend-title"><CalendarDays size={16} /> Categorías</div><div className="legend-items">{categories.map((category) => <span key={category.id}><i style={{ background: category.color }} />{category.name}</span>)}</div><div className="calendar-hint"><span><Avatar profile={profile} size="xs" online={onlineUserIds.has(session.user.id)} /> Tú</span>{partner && <span><Avatar profile={partner} size="xs" online={onlineUserIds.has(partner.id)} /> {partner.display_name || partner.username}</span>}</div></section>
       {loading ? <div className="loading-state"><RefreshCw size={20} className="spin" /><span>Abriendo su historia...</span></div> : <CalendarGrid currentMonth={currentMonth} entries={visibleEntries} presence={presence} selectedDate={selectedDate} onSelectDate={selectDate} currentUserId={session.user.id} />}
       <section className="bottom-note"><div className="note-icon"><MessageCircleHeart size={19} /></div><div><strong>El tiempo que comparten merece un lugar.</strong><span>Agreguen una foto o una nota cada vez que quieran volver a este día.</span></div><button className="text-button" onClick={() => setAddOpen(true)}>Guardar un momento <ArrowRight size={15} /></button></section>
     </main>

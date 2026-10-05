@@ -338,10 +338,12 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
   const [notificationPermission, setNotificationPermission] = useState(() => typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported')
+  const profilesRef = useRef([])
 
   const fetchProfiles = useCallback(async () => {
     const { data } = await supabase.from('profiles').select('*').order('created_at')
     const withMedia = await Promise.all((data || []).map(async (item) => ({ ...item, avatar_url: await signedMediaUrl(item.avatar_path) })))
+    profilesRef.current = withMedia
     setProfiles(withMedia)
     if (session?.user?.id) setProfile(withMedia.find((item) => item.id === session.user.id) || null)
   }, [session?.user?.id])
@@ -389,14 +391,14 @@ function App() {
     const channel = supabase.channel('nuestro-tiempo-live').on('postgres_changes', { event: '*', schema: 'public', table: 'entries' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'entry_photos' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchProfiles).on('postgres_changes', { event: '*', schema: 'public', table: 'notes' }, (payload) => {
       fetchNotes()
       if (payload.eventType === 'INSERT' && payload.new?.recipient_id === session.user.id) {
-        const author = profiles.find((item) => item.id === payload.new.author_id)
+        const author = profilesRef.current.find((item) => item.id === payload.new.author_id)
         const message = `${author?.display_name || 'Tu pareja'} dejó una notita nueva 💌`
         setToast(message)
         if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') new Notification('Nuestro Tiempo', { body: message })
       }
     }).subscribe()
     return () => { mounted = false; supabase.removeChannel(channel) }
-  }, [session?.user?.id, currentMonth, fetchEntries, fetchNotes, fetchProfiles, profiles])
+  }, [session?.user?.id, currentMonth, fetchEntries, fetchNotes, fetchProfiles])
 
   useEffect(() => {
     if (!session?.user?.id) return undefined

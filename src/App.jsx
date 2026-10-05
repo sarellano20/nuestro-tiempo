@@ -371,10 +371,14 @@ function App() {
     let mounted = true
     const load = async () => {
       setLoading(true)
-      const { data: categoryData } = await supabase.from('categories').select('*').order('sort_order')
-      if (mounted) setCategories(categoryData?.length ? categoryData : CATEGORY_FALLBACKS.map((item, index) => ({ ...item, id: item.slug, sort_order: index })))
-      await Promise.all([fetchProfiles(), fetchEntries(), fetchNotes()])
-      if (mounted) setLoading(false)
+      try {
+        const { data: categoryData } = await supabase.from('categories').select('*').order('sort_order')
+        if (mounted) setCategories(categoryData?.length ? categoryData : CATEGORY_FALLBACKS.map((item, index) => ({ ...item, id: item.slug, sort_order: index })))
+        await Promise.allSettled([fetchProfiles(), fetchEntries()])
+      } finally {
+        if (mounted) setLoading(false)
+        fetchNotes()
+      }
     }
     load()
     const channel = supabase.channel('nuestro-tiempo-live').on('postgres_changes', { event: '*', schema: 'public', table: 'entries' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'entry_photos' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchProfiles).on('postgres_changes', { event: '*', schema: 'public', table: 'notes' }, (payload) => {

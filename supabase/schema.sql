@@ -50,9 +50,19 @@ create table if not exists public.presence (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.notes (
+  id uuid primary key default gen_random_uuid(),
+  author_id uuid not null references public.profiles(id) on delete cascade,
+  recipient_id uuid not null references public.profiles(id) on delete cascade,
+  body text not null check (char_length(trim(body)) between 1 and 280),
+  created_at timestamptz not null default now(),
+  read_at timestamptz
+);
+
 create index if not exists entries_entry_date_idx on public.entries(entry_date);
 create index if not exists entries_user_id_idx on public.entries(user_id);
 create index if not exists entry_photos_entry_id_idx on public.entry_photos(entry_id);
+create index if not exists notes_recipient_created_at_idx on public.notes(recipient_id, created_at desc);
 
 create or replace function public.handle_new_user()
 returns trigger
@@ -91,6 +101,7 @@ alter table public.categories enable row level security;
 alter table public.entries enable row level security;
 alter table public.entry_photos enable row level security;
 alter table public.presence enable row level security;
+alter table public.notes enable row level security;
 
 drop policy if exists "Profiles are visible to signed in users" on public.profiles;
 create policy "Profiles are visible to signed in users" on public.profiles for select to authenticated using (true);
@@ -123,6 +134,13 @@ create policy "Users can publish their own presence" on public.presence for inse
 drop policy if exists "Users can update their own presence" on public.presence;
 create policy "Users can update their own presence" on public.presence for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
+drop policy if exists "Users can see their notes" on public.notes;
+create policy "Users can see their notes" on public.notes for select to authenticated using (auth.uid() = author_id or auth.uid() = recipient_id);
+drop policy if exists "Users can create notes for their partner" on public.notes;
+create policy "Users can create notes for their partner" on public.notes for insert to authenticated with check (auth.uid() = author_id and recipient_id <> auth.uid());
+drop policy if exists "Recipients can mark notes as read" on public.notes;
+create policy "Recipients can mark notes as read" on public.notes for update to authenticated using (auth.uid() = recipient_id) with check (auth.uid() = recipient_id);
+
 insert into storage.buckets (id, name, public) values ('memory-photos', 'memory-photos', false) on conflict (id) do nothing;
 drop policy if exists "Signed in users can view memory photos" on storage.objects;
 create policy "Signed in users can view memory photos" on storage.objects for select to authenticated using (bucket_id = 'memory-photos');
@@ -138,5 +156,6 @@ begin
   begin alter publication supabase_realtime add table public.entries; exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.entry_photos; exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.presence; exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.notes; exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.profiles; exception when duplicate_object then null; end;
 end $$;

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
+  Bell,
+  BellRing,
   CalendarDays,
   Camera,
   Check,
@@ -12,9 +14,11 @@ import {
   LogOut,
   MapPin,
   MessageCircleHeart,
+  NotebookPen,
   Plus,
   RefreshCw,
   Search,
+  Send,
   Settings2,
   Sparkles,
   Trash2,
@@ -38,6 +42,7 @@ const CATEGORY_FALLBACKS = [
 const monthFormatter = new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' })
 const longDateFormatter = new Intl.DateTimeFormat('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
 const shortDateFormatter = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' })
+const noteDateFormatter = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 const weekDays = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 
 const toIsoDate = (date) => {
@@ -266,12 +271,63 @@ function ProfileModal({ profile, onClose, onUpdated }) {
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="modal-card profile-modal"><div className="modal-header"><div><span className="eyebrow"><UserRound size={14} /> Tu perfil</span><h2>Un poquito de ustedes</h2></div><button className="icon-button" onClick={onClose}><X size={18} /></button></div><form onSubmit={save}><div className="profile-preview"><Avatar profile={profile} size="xl" /><button type="button" className="avatar-change" onClick={() => fileRef.current?.click()}><Camera size={14} /> Cambiar foto</button><input ref={fileRef} type="file" accept="image/*" hidden onChange={(event) => setFiles(Array.from(event.target.files || []))} /></div><label className="wide-label">Nombre para mostrar<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Cómo quieres que te veamos" /></label><div className="profile-handle">@{profile.username}</div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancelar</button><button className="primary-button" disabled={saving}>{saving ? 'Guardando...' : 'Guardar cambios'}</button></div></form></section></div>
 }
 
+function NotitasPanel({ open, onToggle, notes, profiles, currentUserId, partner, unreadCount, saving, notificationPermission, onCreate, onEnableNotifications }) {
+  const [body, setBody] = useState('')
+  const [error, setError] = useState('')
+  const submit = async (event) => {
+    event.preventDefault()
+    const cleanBody = body.trim().slice(0, 280)
+    if (!cleanBody) return setError('Escribe una notita antes de enviarla.')
+    if (!partner) return setError('La otra persona todavía no tiene su perfil listo.')
+    setError('')
+    const saved = await onCreate(cleanBody)
+    if (saved) setBody('')
+  }
+
+  return <section className={`notitas-panel ${open ? 'notitas-open' : ''}`}>
+    <button className="notitas-heading" onClick={onToggle} aria-expanded={open}>
+      <span className="notitas-heading-icon"><NotebookPen size={18} /></span>
+      <span className="notitas-heading-copy"><strong>Notitas</strong><small>Mensajes pequeños para alegrar el día</small></span>
+      {unreadCount > 0 && <span className="unread-pill">{unreadCount} nueva{unreadCount === 1 ? '' : 's'}</span>}
+      <ArrowRight size={17} className={`notitas-arrow ${open ? 'notitas-arrow-open' : ''}`} />
+    </button>
+    {open && <div className="notitas-content">
+      <div className="notitas-compose-card">
+        <div className="notitas-compose-top"><span>Para {partner?.display_name || partner?.username || 'tu pareja'} ♡</span><span>{body.length}/280</span></div>
+        <form onSubmit={submit}>
+          <textarea value={body} maxLength="280" onChange={(event) => setBody(event.target.value)} placeholder="Déjale una notita bonita..." rows="3" />
+          {error && <div className="form-error">{error}</div>}
+          <div className="notitas-compose-actions">
+            {notificationPermission !== 'granted' && notificationPermission !== 'unsupported' && <button type="button" className="notification-button" onClick={onEnableNotifications}><Bell size={14} /> Activar avisos</button>}
+            <button className="primary-button" disabled={saving || !partner}>{saving ? <><RefreshCw size={14} className="spin" /> Enviando...</> : <><Send size={14} /> Enviar notita</>}</button>
+          </div>
+        </form>
+      </div>
+      <div className="notitas-list">
+        {notes.length === 0 && <div className="notitas-empty"><span>💌</span><strong>Aquí pueden dejarse cariño</strong><small>La primera notita siempre se siente especial.</small></div>}
+        {notes.map((note) => {
+          const author = profiles.find((item) => item.id === note.author_id)
+          const mine = note.author_id === currentUserId
+          return <article className={`notita-card ${mine ? 'notita-mine' : ''}`} key={note.id}>
+            <Avatar profile={author} size="sm" />
+            <div className="notita-body"><div className="notita-meta"><strong>{mine ? 'Tú' : (author?.display_name || author?.username || 'Tu pareja')}</strong><time>{noteDateFormatter.format(new Date(note.created_at))}</time></div><p>{note.body}</p></div>
+          </article>
+        })}
+      </div>
+      {notificationPermission === 'granted' && <div className="notification-enabled"><BellRing size={14} /> Recibirás un aviso cuando llegue una notita nueva.</div>}
+    </div>}
+  </section>
+}
+
 function App() {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
   const [profiles, setProfiles] = useState([])
   const [categories, setCategories] = useState([])
   const [entries, setEntries] = useState([])
+  const [notes, setNotes] = useState([])
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [notesSaving, setNotesSaving] = useState(false)
   const [livePresence, setLivePresence] = useState([])
   const [currentMonth, setCurrentMonth] = useState(startOfMonth(new Date()))
   const [selectedDate, setSelectedDate] = useState(toIsoDate(new Date()))
@@ -281,6 +337,7 @@ function App() {
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
+  const [notificationPermission, setNotificationPermission] = useState(() => typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported')
 
   const fetchProfiles = useCallback(async () => {
     const { data } = await supabase.from('profiles').select('*').order('created_at')
@@ -297,6 +354,11 @@ function App() {
     setEntries(hydrated)
   }, [currentMonth])
 
+  const fetchNotes = useCallback(async () => {
+    const { data } = await supabase.from('notes').select('*').order('created_at', { ascending: false })
+    setNotes(data || [])
+  }, [])
+
   useEffect(() => {
     if (!hasSupabaseConfig || !supabase) return
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
@@ -311,13 +373,21 @@ function App() {
       setLoading(true)
       const { data: categoryData } = await supabase.from('categories').select('*').order('sort_order')
       if (mounted) setCategories(categoryData?.length ? categoryData : CATEGORY_FALLBACKS.map((item, index) => ({ ...item, id: item.slug, sort_order: index })))
-      await Promise.all([fetchProfiles(), fetchEntries()])
+      await Promise.all([fetchProfiles(), fetchEntries(), fetchNotes()])
       if (mounted) setLoading(false)
     }
     load()
-    const channel = supabase.channel('nuestro-tiempo-live').on('postgres_changes', { event: '*', schema: 'public', table: 'entries' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'entry_photos' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchProfiles).subscribe()
+    const channel = supabase.channel('nuestro-tiempo-live').on('postgres_changes', { event: '*', schema: 'public', table: 'entries' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'entry_photos' }, fetchEntries).on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchProfiles).on('postgres_changes', { event: '*', schema: 'public', table: 'notes' }, (payload) => {
+      fetchNotes()
+      if (payload.eventType === 'INSERT' && payload.new?.recipient_id === session.user.id) {
+        const author = profiles.find((item) => item.id === payload.new.author_id)
+        const message = `${author?.display_name || 'Tu pareja'} dejó una notita nueva 💌`
+        setToast(message)
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') new Notification('Nuestro Tiempo', { body: message })
+      }
+    }).subscribe()
     return () => { mounted = false; supabase.removeChannel(channel) }
-  }, [session?.user?.id, currentMonth, fetchEntries, fetchProfiles])
+  }, [session?.user?.id, currentMonth, fetchEntries, fetchNotes, fetchProfiles, profiles])
 
   useEffect(() => {
     if (!session?.user?.id) return undefined
@@ -367,6 +437,27 @@ function App() {
   const deleteEntry = async (id) => { const { error } = await supabase.from('entries').delete().eq('id', id); if (!error) setToast('Recuerdo eliminado') }
   const afterSave = () => { setAddOpen(false); setToast('Recuerdo guardado en su historia'); fetchEntries() }
   const updateProfile = async (nextProfile) => { setProfile({ ...nextProfile, avatar_url: await signedMediaUrl(nextProfile.avatar_path) }); setProfileOpen(false); fetchProfiles(); setToast('Perfil actualizado') }
+  const createNote = async (body) => {
+    if (!partner) return false
+    setNotesSaving(true)
+    const { error } = await supabase.from('notes').insert({ body, author_id: session.user.id, recipient_id: partner.id })
+    setNotesSaving(false)
+    if (error) { setToast('No pudimos enviar la notita'); return false }
+    await fetchNotes()
+    setToast('Notita enviada 💌')
+    return true
+  }
+  const markNotesRead = useCallback(async () => {
+    if (!session?.user?.id || !notes.some((note) => note.recipient_id === session.user.id && !note.read_at)) return
+    const { error } = await supabase.from('notes').update({ read_at: new Date().toISOString() }).eq('recipient_id', session.user.id).is('read_at', null)
+    if (!error) fetchNotes()
+  }, [notes, session?.user?.id, fetchNotes])
+  const enableNotifications = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return setNotificationPermission('unsupported')
+    const permission = await Notification.requestPermission()
+    setNotificationPermission(permission)
+    if (permission === 'granted') setToast('Avisos de notitas activados 🔔')
+  }
 
   const visibleEntries = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -375,18 +466,25 @@ function App() {
   }, [entries, search])
   const presence = useMemo(() => livePresence.map((item) => ({ ...item, profile: profiles.find((person) => person.id === item.user_id) })).filter((item) => item.profile), [livePresence, profiles])
   const onlineUserIds = useMemo(() => new Set(presence.map((item) => item.user_id)), [presence])
+  const unreadNotes = notes.filter((note) => note.recipient_id === session?.user?.id && !note.read_at).length
   const selectedDayEntries = entries.filter((entry) => entry.entry_date === selectedDate)
   const monthMemories = entries.length
   const todayCount = entries.filter((entry) => entry.entry_date === toIsoDate(new Date())).length
-  const partner = profiles.find((item) => item.id !== session?.user?.id)
+  const partnerUsername = profile?.username === 'diaval' ? 'sarellano' : 'diaval'
+  const partner = profiles.find((item) => item.username === partnerUsername)
+
+  useEffect(() => {
+    if (notesOpen) markNotesRead()
+  }, [notesOpen, markNotesRead])
 
   if (!session) return <LoginScreen onLogin={(user) => setSession({ user })} />
   return <div className="app-shell">
-    <header className="app-header"><Logo compact /><div className="header-center"><span className="top-kicker">Nuestra historia</span><span className="live-indicator"><i /> Sincronizado en vivo</span></div><div className="header-actions"><div className="user-pair"><button className="avatar-button" onClick={() => setProfileOpen(true)}><Avatar profile={profile} size="sm" online={onlineUserIds.has(session.user.id)} /></button>{partner && <Avatar profile={partner} size="sm" online={onlineUserIds.has(partner.id)} />}</div><div className="header-divider" /><button className="icon-button" onClick={() => setProfileOpen(true)} title="Editar perfil"><Settings2 size={18} /></button><button className="icon-button" onClick={signOut} title="Cerrar sesión"><LogOut size={18} /></button></div></header>
+    <header className="app-header"><Logo compact /><div className="header-center"><span className="top-kicker">Nuestra historia</span><span className="live-indicator"><i /> Sincronizado en vivo</span></div><div className="header-actions"><div className="user-pair">{onlineUserIds.has(session.user.id) && <button className="avatar-button" onClick={() => setProfileOpen(true)}><Avatar profile={profile} size="sm" online /></button>}{partner && onlineUserIds.has(partner.id) && <Avatar profile={partner} size="sm" online />}</div><button className="notes-header-button" onClick={() => setNotesOpen(true)} title="Abrir Notitas"><NotebookPen size={17} />{unreadNotes > 0 && <span>{unreadNotes}</span>}</button><div className="header-divider" /><button className="icon-button" onClick={() => setProfileOpen(true)} title="Editar perfil"><Settings2 size={18} /></button><button className="icon-button" onClick={signOut} title="Cerrar sesión"><LogOut size={18} /></button></div></header>
     <main className="main-content"><section className="welcome-row"><div><span className="eyebrow"><Sparkles size={14} /> Calendario compartido</span><h1>Hola, {profile?.display_name || profile?.username} <span>♡</span></h1><p>Un lugar para volver a todos sus días bonitos.</p></div><div className="quick-stats"><div><strong>{monthMemories}</strong><span>recuerdos este mes</span></div><div><strong>{todayCount}</strong><span>en el día de hoy</span></div></div></section>
       <section className="toolbar-card"><div className="month-navigation"><button className="icon-button light" onClick={() => moveMonth(-1)}><ArrowLeft size={17} /></button><button className="month-title" onClick={goToday}>{monthFormatter.format(currentMonth).replace(/^./, (letter) => letter.toUpperCase())}</button><button className="icon-button light" onClick={() => moveMonth(1)}><ArrowRight size={17} /></button><button className="today-button" onClick={goToday}>Hoy</button></div><div className="toolbar-tools"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar recuerdos..." /></div><button className="primary-button" onClick={() => { setSelectedDate(selectedDate || toIsoDate(new Date())); setDrawerOpen(true); setAddOpen(true) }}><Plus size={16} /> Nuevo recuerdo</button></div></section>
-      <section className="legend-row"><div className="legend-title"><CalendarDays size={16} /> Categorías</div><div className="legend-items">{categories.map((category) => <span key={category.id}><i style={{ background: category.color }} />{category.name}</span>)}</div><div className="calendar-hint"><span><Avatar profile={profile} size="xs" online={onlineUserIds.has(session.user.id)} /> Tú</span>{partner && <span><Avatar profile={partner} size="xs" online={onlineUserIds.has(partner.id)} /> {partner.display_name || partner.username}</span>}</div></section>
+      <section className="legend-row"><div className="legend-title"><CalendarDays size={16} /> Categorías</div><div className="legend-items">{categories.map((category) => <span key={category.id}><i style={{ background: category.color }} />{category.name}</span>)}</div><div className="calendar-hint"><span className="connected-label">Conectados ahora</span>{presence.map((person) => <span key={person.user_id}><Avatar profile={person.profile} size="xs" online /> {person.profile.display_name || person.profile.username}</span>)}</div></section>
       {loading ? <div className="loading-state"><RefreshCw size={20} className="spin" /><span>Abriendo su historia...</span></div> : <CalendarGrid currentMonth={currentMonth} entries={visibleEntries} presence={presence} selectedDate={selectedDate} onSelectDate={selectDate} currentUserId={session.user.id} />}
+      <NotitasPanel open={notesOpen} onToggle={() => setNotesOpen((value) => !value)} notes={notes} profiles={profiles} currentUserId={session.user.id} partner={partner} unreadCount={unreadNotes} saving={notesSaving} notificationPermission={notificationPermission} onCreate={createNote} onEnableNotifications={enableNotifications} />
       <section className="bottom-note"><div className="note-icon"><MessageCircleHeart size={19} /></div><div><strong>El tiempo que comparten merece un lugar.</strong><span>Agreguen una foto o una nota cada vez que quieran volver a este día.</span></div><button className="text-button" onClick={() => setAddOpen(true)}>Guardar un momento <ArrowRight size={15} /></button></section>
     </main>
     {drawerOpen && <DayDrawer selectedDate={selectedDate} entries={entries} categories={categories} onClose={() => { setDrawerOpen(false); setAddOpen(false) }} onAdd={() => setAddOpen(true)} onDelete={deleteEntry} currentUserId={session.user.id} />}
